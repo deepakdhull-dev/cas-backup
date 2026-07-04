@@ -8,7 +8,6 @@ from .backend.base import Backend
 from .index import ChunkIndex
 from .packfile import (DEFAULT_PACK_SIZE, PackEntry, PackWriter, read_blob)
 
-
 class ObjectStoreError(Exception):
 
 
