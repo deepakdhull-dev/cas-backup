@@ -1,3 +1,45 @@
+"""Repository verification (decision 17: explicit check/scrub).
+
+WHY A CHECK COMMAND WHEN EVERY READ ALREADY VERIFIES
+====================================================
+Verify-on-read (layers in restore.py) proves integrity of what you
+RESTORE, at the moment you restore it — which is the moment you can
+least afford to discover rot. Backups sit unread for months while
+disks decay (bit rot), filesystems misbehave, and partial syncs to
+remote storage drop blobs. `check` moves discovery forward in time:
+run it periodically, find damage while the ORIGINAL data still exists
+to re-back-up. A backup verified only at restore time is a hope, not
+a backup.
+
+TWO TIERS, PRICED DIFFERENTLY
+=============================
+STRUCTURAL (default, cheap — metadata-only I/O):
+  1. Every snapshot blob decrypts and parses.
+  2. Every tree walks: nodes load (each load IS a full verification
+     of that node — AEAD + id re-hash), entries validate.
+  3. Every referenced chunk id EXISTS in the index — a missing chunk
+     means an unrestorable file, found now instead of at restore.
+  4. Index/pack cross-check: every index entry's pack exists in the
+     backend and the entry's geometry fits inside it; every pack in
+     the backend is known to the index (orphans reported, not
+     deleted — check is read-only; prune deletes).
+
+DEEP (--read-data, expensive — reads every stored byte):
+  5. Every chunk in the index is fetched through store.get(): AEAD
+     verify + decompress + plaintext re-hash, the full gauntlet.
+     Detects bit rot anywhere in stored data. Cost: reads the whole
+     repository; schedule accordingly (cron monthly, not per-backup).
+
+READ-ONLY BY CONTRACT
+=====================
+check mutates nothing — no lock escalation, safe to run concurrently
+with backups (LMDB gives it a consistent read snapshot). Repair
+actions (rebuild index, delete orphans) belong to prune and to an
+explicit repair flag wired at the CLI, never to a routine health
+probe. A diagnostic that silently repairs is a diagnostic that
+silently destroys evidence.
+"""
+
 from __future__ import annotations
 
 from dataclasses import dataclass, field
@@ -18,31 +60,22 @@ class CheckReport:
     trees_walked: int = 0
     files_seen: int = 0
     chunks_referenced: int = 0
-    chunks_missing: list[str] = field(default_factory=list)  # hex ids
+    chunks_missing: list[str] = field(default_factory=list)     # hex ids
     chunks_read: int = 0
-    chunks_corrupt: list[str] = field(default_factory=list)  # hex ids
+    chunks_corrupt: list[str] = field(default_factory=list)     # hex ids
     packs_checked: int = 0
     pack_problems: list[str] = field(default_factory=list)
     orphan_packs: list[str] = field(default_factory=list)
-    errors: list[str] = field(default_factory=list)  # everything else
+    errors: list[str] = field(default_factory=list)             # everything else
 
     @property
     def ok(self) -> bool:
-        return not (
-            self.chunks_missing
-            or self.chunks_corrupt
-            or self.pack_problems
-            or self.errors
-        )
+        return not (self.chunks_missing or self.chunks_corrupt
+                    or self.pack_problems or self.errors)
 
 
-def check(
-    store: ObjectStore,
-    index: ChunkIndex,
-    backend: Backend,
-    key: bytes,
-    read_data: bool = False,
-) -> CheckReport:
+def check(store: ObjectStore, index: ChunkIndex, backend: Backend,
+          key: bytes, read_data: bool = False) -> CheckReport:
     """Run verification. See module docstring for tier semantics."""
     report = CheckReport()
     referenced: set[bytes] = set()
@@ -76,7 +109,7 @@ def check(
     # ---- tier 4: index <-> pack cross-check ---------------------------------
     backend_packs: set[bytes] = set()
     for name in backend.list(PACK_PREFIX):
-        hex_part = name[len(PACK_PREFIX) :].removesuffix(".pack")
+        hex_part = name[len(PACK_PREFIX):].removesuffix(".pack")
         try:
             backend_packs.add(hasher.from_hex(hex_part))
         except ValueError:
@@ -93,15 +126,13 @@ def check(
         except BlobNotFound:
             report.pack_problems.append(
                 f"chunk {hasher.to_hex(cid)}: indexed in missing pack "
-                f"{hasher.to_hex(pack_id)}"
-            )
+                f"{hasher.to_hex(pack_id)}")
             continue
         if entry.offset + entry.length > psize:
             report.pack_problems.append(
                 f"chunk {hasher.to_hex(cid)}: geometry overruns pack "
                 f"{hasher.to_hex(pack_id)} ({entry.offset}+{entry.length} "
-                f"> {psize})"
-            )
+                f"> {psize})")
     report.packs_checked = len(indexed_packs)
 
     for pack_id in backend_packs - indexed_packs:

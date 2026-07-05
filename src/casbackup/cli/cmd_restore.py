@@ -1,3 +1,6 @@
+"""restore — full snapshot or single path. Exit 3 if any entry failed
+(partial restores must not look like success to scripts)."""
+
 import sys
 
 import click
@@ -16,10 +19,8 @@ def register(cli):
         """Restore snapshot REF (id, prefix, or 'latest') into TARGET."""
         with open_repo(ctx) as repo:
             rep = repo.restore(ref, target, path=path, force=force)
-        click.echo(
-            f"restored files={rep.files} dirs={rep.dirs} "
-            f"symlinks={rep.symlinks} bytes={rep.bytes_written:,}"
-        )
+        click.echo(f"restored files={rep.files} dirs={rep.dirs} "
+                   f"symlinks={rep.symlinks} bytes={rep.bytes_written:,}")
         for w in rep.warnings:
             click.echo(f"  warning: {w}", err=True)
         if rep.failed:

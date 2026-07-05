@@ -1,3 +1,65 @@
+"""Local filesystem backend (decision 14: first concrete Backend).
+
+WHAT THIS FILE ACTUALLY TEACHES
+===============================
+The Backend interface (base.py) promises atomic puts. This file is
+where that promise gets kept, and keeping it on POSIX requires three
+distinct steps most programmers skip. Understand this sequence once
+and durable-write bugs become visible everywhere you look:
+
+THE ATOMIC DURABLE WRITE, STEP BY STEP
+======================================
+Goal: after a crash at ANY instant, the final name holds either the
+complete new content or nothing/old content. Never a partial file.
+
+    1. write to a TEMP NAME in the SAME DIRECTORY as the target
+    2. fsync(temp fd)          -- data + inode durable
+    3. rename(temp, final)     -- atomic visibility switch
+    4. fsync(directory fd)     -- the rename ITSELF durable
+
+Why each step:
+
+1. SAME directory, not /tmp: rename(2) is atomic only within one
+   filesystem; /tmp is frequently a different mount (tmpfs). Cross-
+   filesystem "rename" degrades to copy+delete — not atomic, and the
+   whole guarantee silently evaporates. This is the classic bug.
+
+2. fsync BEFORE rename: rename orders VISIBILITY, not DURABILITY.
+   Without fsync, the rename can hit disk before the data blocks do;
+   crash between them leaves the final name pointing at garbage or a
+   zero-length file. (ext4's infamous zero-length-files-after-crash
+   era was exactly this pattern in applications.)
+
+3. rename is the atomicity primitive: POSIX guarantees the name flips
+   from old target (or nonexistence) to new file in one step; readers
+   never observe an in-between state.
+
+4. fsync the DIRECTORY: the rename is a mutation of the directory's
+   own data (its name->inode table). If the dir entry update is lost
+   in a crash, the file is durable but unreachable under its final
+   name. Directory fsync commits the naming.
+
+S3 gives all four for free (PUT is atomic by API). SFTP needs the same
+dance server-side. This file is the hard case, which is why the
+interface was designed around write-once blobs — the dance runs once
+per blob, never per mutation.
+
+PATH SAFETY
+===========
+Blob names arrive from repository content (e.g. snapshot names). A
+malicious or corrupt repository must not be able to name a blob
+"../../home/user/.bashrc". _resolve() rejects absolute names, '..'
+components, and verifies the resolved path stays under the root.
+Validating at the backend boundary (not at call sites) means there is
+exactly one place this can be gotten wrong.
+
+ERROR TRANSLATION
+=================
+OSError is translated to the BackendError hierarchy at this boundary
+so upper layers never import errno semantics. FileNotFoundError ->
+BlobNotFound; everything else -> BackendError with context.
+"""
+
 from __future__ import annotations
 
 import os
@@ -10,6 +72,14 @@ from .base import Backend, BackendError, BlobNotFound
 
 
 class LocalBackend(Backend):
+    """Backend rooted at a local directory (the repository directory).
+
+    Layout under root mirrors blob names directly:
+        <root>/packs/<hex>.pack
+        <root>/snapshots/<name>
+        ...
+    """
+
     def __init__(self, root: str | Path) -> None:
         self._root = Path(root).resolve()
         self._root.mkdir(parents=True, exist_ok=True)
@@ -51,7 +121,7 @@ class LocalBackend(Backend):
             with os.fdopen(fd, "wb") as f:
                 f.write(data)
                 f.flush()
-                os.fsync(f.fileno())  # step 2
+                os.fsync(f.fileno())          # step 2
             self._atomic_publish(Path(tmp), final)
         except OSError as exc:
             try:
@@ -74,7 +144,7 @@ class LocalBackend(Backend):
             with os.fdopen(fd, "wb") as dst, open(local_path, "rb") as src:
                 shutil.copyfileobj(src, dst, length=1024 * 1024)
                 dst.flush()
-                os.fsync(dst.fileno())  # step 2
+                os.fsync(dst.fileno())        # step 2
             self._atomic_publish(Path(tmp), final)
         except OSError as exc:
             try:
@@ -117,8 +187,7 @@ class LocalBackend(Backend):
         if len(data) != length:
             raise BackendError(
                 f"get_range({name!r}): wanted {length} bytes at {offset}, "
-                f"got {len(data)} — index/pack geometry mismatch"
-            )
+                f"got {len(data)} — index/pack geometry mismatch")
         return data
 
     # -- probes --------------------------------------------------------------------
@@ -139,13 +208,8 @@ class LocalBackend(Backend):
         """Walk under the prefix's directory; emit names relative to
         root, skipping in-flight temp files (.tmp-*), which are
         implementation detail, not blobs."""
-        base = (
-            self._root / prefix
-            if not prefix
-            else self._resolve(prefix.rstrip("/"))
-            if "/" in prefix or prefix
-            else self._root
-        )
+        base = self._root / prefix if not prefix else self._resolve(prefix.rstrip("/")) \
+            if "/" in prefix or prefix else self._root
         # Simpler and correct: walk root, filter by string prefix.
         for dirpath, _dirs, files in os.walk(self._root):
             for fname in files:
@@ -165,4 +229,4 @@ class LocalBackend(Backend):
             raise BlobNotFound(name) from None
         except OSError as exc:
             raise BackendError(f"delete({name!r}): {exc}") from exc
-        self._fsync_dir(path.parent)  # deletion durable too
+        self._fsync_dir(path.parent)          # deletion durable too

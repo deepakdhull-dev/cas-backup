@@ -1,3 +1,20 @@
+"""CLI entrypoint (decision 20).
+
+STRUCTURE
+=========
+click group carrying shared options (--repo, --config, --passphrase
+handling implied via config/env/prompt); each subcommand in its own
+cmd_*.py module registered here. One decision worth recording: every
+command resolves Repository construction through _open() below —
+the CLI never assembles layers (repo.py composition-root rule).
+
+EXIT CODES (scriptability contract)
+    0  success
+    1  operational failure (bad passphrase, lock held, missing snapshot)
+    2  usage error (click's own)
+    3  verification found problems (check) / restore had failures
+"""
+
 from __future__ import annotations
 
 import sys
@@ -10,14 +27,12 @@ from ..repo import Repository, RepositoryError
 
 class Ctx:
     """Shared CLI state: parsed config + repo path resolution."""
-
     def __init__(self, config_path: str | None, repo_flag: str | None):
         self.cfg = Config.load(config_path)
         self.repo_path = repo_flag or self.cfg.repository
         if not self.repo_path:
             raise ConfigError(
-                "no repository: pass --repo or set `repository` in config"
-            )
+                "no repository: pass --repo or set `repository` in config")
 
 
 def open_repo(ctx: Ctx, *, confirm_passphrase: bool = False) -> Repository:
@@ -38,9 +53,10 @@ def cli(ctx: click.Context, repo: str | None, config_path: str | None) -> None:
 
 
 def _register() -> None:
-    from . import cmd_backup, cmd_check, cmd_init, cmd_list, cmd_prune, cmd_restore
-
-    for mod in (cmd_init, cmd_backup, cmd_restore, cmd_list, cmd_check, cmd_prune):
+    from . import (cmd_backup, cmd_check, cmd_init, cmd_list, cmd_prune,
+                   cmd_restore)
+    for mod in (cmd_init, cmd_backup, cmd_restore, cmd_list, cmd_check,
+                cmd_prune):
         mod.register(cli)
 
 

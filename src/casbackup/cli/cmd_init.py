@@ -1,3 +1,7 @@
+"""init — create a repository. Prompts twice for the passphrase (typo
+in a passphrase you set = repository you can never open; the confirm
+prompt is the only guard)."""
+
 import click
 
 from ..repo import init_repository

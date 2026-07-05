@@ -1,0 +1,32 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "casbackup"
+version = "0.1.0"
+description = "Content-addressable storage engine with incremental backup client"
+requires-python = ">=3.11"
+dependencies = [
+    "lmdb>=1.4.1",
+    "zstandard>=0.22.0",
+    "cryptography>=42.0.0",
+    "click>=8.1.7",
+    "tomli>=2.0.1; python_version < '3.11'",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=5.0.0",
+    "hypothesis>=6.100.0",
+]
+
+[project.scripts]
+casbackup = "casbackup.cli.main:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/casbackup"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

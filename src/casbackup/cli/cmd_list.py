@@ -1,3 +1,5 @@
+"""list — snapshots, or one snapshot's contents."""
+
 import datetime
 
 import click
@@ -21,12 +23,10 @@ def register(cli):
                 for s in snaps:
                     ts = datetime.datetime.fromtimestamp(s.created)
                     st = s.stats
-                    click.echo(
-                        f"{s.id}  {ts:%Y-%m-%d %H:%M:%S}  "
-                        f"{s.source_path}  "
-                        f"({st.get('files', '?')} files, "
-                        f"{st.get('bytes_read', 0):,} bytes)"
-                    )
+                    click.echo(f"{s.id}  {ts:%Y-%m-%d %H:%M:%S}  "
+                               f"{s.source_path}  "
+                               f"({st.get('files', '?')} files, "
+                               f"{st.get('bytes_read', 0):,} bytes)")
             else:
                 snap = repo.resolve(ref)
                 for path, entry in walk_tree(repo.store, snap.root_tree):
